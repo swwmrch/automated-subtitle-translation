@@ -2,11 +2,54 @@
   "name": "automated-subtitle-translation",
   "version": "0.1.0",
   "private": true,
+  "main": "electron/main.js",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "qa:accuracy": "node scripts/accuracy-test.mjs",
+    "qa:tc": "node scripts/verify-tc2.mjs",
+    "translate:file": "node scripts/run-translation.mjs",
+    "electron:build": "next build && node scripts/copy-static.js",
+    "electron:start": "electron .",
+    "electron:dev": "npm run electron:build && electron .",
+    "package:win": "npm run electron:build && electron-builder --win --dir"
+  },
+  "build": {
+    "appId": "com.kmtv.subtitle-translator",
+    "productName": "KMTV Subtitle Translator",
+    "copyright": "KMTV Asia",
+    "afterPack": "scripts/afterPack.js",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "electron/**/*",
+      "package.json",
+      "!node_modules"
+    ],
+    "extraResources": [
+      {
+        "from": ".next/standalone",
+        "to": "standalone",
+        "filter": ["**/*"]
+      },
+      {
+        "from": ".env.local",
+        "to": ".env.local"
+      }
+    ],
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        {
+          "target": "dir",
+          "arch": ["x64"]
+        }
+      ]
+    },
+    "asar": true
   },
   "dependencies": {
     "@upstash/ratelimit": "^2.0.8",
@@ -22,8 +65,11 @@
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "electron": "^42.4.0",
+    "electron-builder": "^26.15.2",
     "eslint": "^9",
     "eslint-config-next": "16.2.6",
+    "opencc-js": "^1.3.1",
     "tailwindcss": "^4",
     "typescript": "^5"
   }

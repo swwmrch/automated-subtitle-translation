@@ -11,8 +11,17 @@ const eslintConfig = defineConfig([
     ".next/**",
     "out/**",
     "build/**",
+    "dist/**",
     "next-env.d.ts",
   ]),
+  // Electron main process and build scripts run in Node's CommonJS context,
+  // where require() is the correct idiom.
+  {
+    files: ["electron/**/*.js", "scripts/**/*.js"],
+    rules: {
+      "@typescript-eslint/no-require-imports": "off",
+    },
+  },
 ]);
 
 export default eslintConfig;

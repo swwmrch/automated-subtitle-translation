@@ -39,3 +39,9 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# runtime config (generated on first launch, contains session secret)
+/config.json
+
+# packaged output (contains .env.local with real credentials)
+/dist

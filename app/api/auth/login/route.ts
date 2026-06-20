@@ -18,7 +18,13 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  const { password } = await request.json();
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
+  }
+  const { password } = (body ?? {}) as { password?: string };
 
   if (!password || password !== process.env.APP_PASSWORD) {
     // Same error for missing or wrong password — don't leak which case it is

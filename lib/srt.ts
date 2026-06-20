@@ -39,12 +39,22 @@ export function cleanRawResponse(raw: string): string {
   return clean;
 }
 
-// Parse LLM response into clean SRT block strings.
-export function parseTranslatedBlocks(raw: string): string[] {
-  return cleanRawResponse(raw)
-    .split(/\n{2,}/)
-    .map((b) => b.trim())
-    .filter((b) => b && b.includes("-->"));
+// Parse an ID-tagged model response (<<id>> text ... per record) into an
+// id→text map. Records may span multiple lines; a record runs until the next
+// <<id>> marker or end of input. This aligns output to source by ID rather
+// than by position, so a merged/dropped line can be detected and retried
+// individually instead of silently shifting the whole batch.
+export function parseIdBlocks(raw: string): Map<number, string> {
+  const clean = cleanRawResponse(raw);
+  const map = new Map<number, string>();
+  const re = /<<\s*(\d+)\s*>>\s*([\s\S]*?)(?=<<\s*\d+\s*>>|$)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(clean)) !== null) {
+    const id = parseInt(m[1], 10);
+    const text = m[2].trim();
+    if (!isNaN(id) && text) map.set(id, text);
+  }
+  return map;
 }
 
 // Re-number blocks and strip bare integer artifacts that leak from LLM output.
@@ -75,16 +85,42 @@ export function fixSrtNumbering(blocks: string[]): string[] {
   return fixed;
 }
 
+// Remove full-width Chinese periods (。) from Traditional-Chinese subtitles —
+// subtitle convention omits sentence-ending periods. A 。 at end of line or
+// before a closing bracket/quote is dropped; a 。 between two sentences becomes
+// a full-width space so the sentences don't run together. The half-width "."
+// is left alone so ellipses (...) survive.
+const TC_CLOSERS = "）】」』〉》＞)]}";
+export function stripTcPeriods(text: string): string {
+  return text
+    .split("\n")
+    .map((line) => {
+      let out = "";
+      for (let i = 0; i < line.length; i++) {
+        const ch = line[i];
+        if (ch === "。") {
+          const next = line[i + 1];
+          if (next === undefined || TC_CLOSERS.includes(next)) continue; // drop
+          out += "　"; // internal → full-width space
+        } else {
+          out += ch;
+        }
+      }
+      return out.replace(/[　\s]+$/, "");
+    })
+    .join("\n");
+}
+
 export interface SrtWarning {
   type: string;
   message: string;
 }
 
 // Post-translation validation — returns warnings for known LLM output errors.
-export function validateSrt(content: string, expectedBlocks: number, lang = ""): SrtWarning[] {
+export function validateSrt(content: string, expectedBlocks: number): SrtWarning[] {
   const warnings: SrtWarning[] = [];
   const tsRe = /^\d{2}:\d{2}:\d{2},\d{3} --> \d{2}:\d{2}:\d{2},\d{3}$/;
-  const smartQuoteRe = /[''""]/u;
+  const smartQuoteRe = /[‘’“”]/u;
   const koreanRe = /[가-힣ᄀ-ᇿ㄰-㆏]/u;
 
   const blocks = content
@@ -117,7 +153,7 @@ export function validateSrt(content: string, expectedBlocks: number, lang = ""):
         leakedNumbers.push(`#${idxStr} line ${j + 1}`);
       if (smartQuoteRe.test(ln))
         smartQuotes.push(`#${idxStr} line ${j + 1}`);
-      if (j >= 2 && lang !== "KO" && koreanRe.test(ln))
+      if (j >= 2 && koreanRe.test(ln))
         koreanLines.push(`#${idxStr}`);
     });
 
@@ -130,10 +166,8 @@ export function validateSrt(content: string, expectedBlocks: number, lang = ""):
     warnings.push({ type: "fence", message: `code fence artifacts (${fenceLines.length}): ${fenceLines.slice(0, 3).join(", ")}` });
   if (leakedNumbers.length)
     warnings.push({ type: "leaked_numbers", message: `bare numbers in text (${leakedNumbers.length}): ${leakedNumbers.slice(0, 3).join(", ")}` });
-  if (smartQuotes.length) {
-    const note = lang === "EN" ? " — likely apostrophes in contractions (won't, didn't), safe to ignore" : "";
-    warnings.push({ type: "smart_quotes", message: `smart quotes (${smartQuotes.length}): ${smartQuotes.slice(0, 3).join(", ")}${note}` });
-  }
+  if (smartQuotes.length)
+    warnings.push({ type: "smart_quotes", message: `smart quotes (${smartQuotes.length}): ${smartQuotes.slice(0, 3).join(", ")}` });
   if (tsTrailing.length)
     warnings.push({ type: "ts_trailing", message: `timestamp trailing spaces (${tsTrailing.length}): ${tsTrailing.slice(0, 3).join(", ")}` });
   if (koreanLines.length)

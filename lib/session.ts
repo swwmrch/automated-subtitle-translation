@@ -2,6 +2,7 @@ import type { SessionOptions } from "iron-session";
 
 export interface SessionData {
   isLoggedIn?: boolean;
+  customApiKey?: string;
 }
 
 export const sessionOptions: SessionOptions = {
