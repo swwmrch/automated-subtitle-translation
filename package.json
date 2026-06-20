@@ -14,7 +14,8 @@
     "electron:build": "next build && node scripts/copy-static.js",
     "electron:start": "electron .",
     "electron:dev": "npm run electron:build && electron .",
-    "package:win": "npm run electron:build && electron-builder --win --dir"
+    "package:win": "npm run electron:build && electron-builder --win --dir",
+    "package:mac": "npm run electron:build && electron-builder --mac --dir"
   },
   "build": {
     "appId": "com.kmtv.subtitle-translator",
@@ -46,6 +47,15 @@
         {
           "target": "dir",
           "arch": ["x64"]
+        }
+      ]
+    },
+    "mac": {
+      "icon": "build/icon.icns",
+      "category": "public.app-category.productivity",
+      "target": [
+        {
+          "target": "dir"
         }
       ]
     },

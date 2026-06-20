@@ -16,9 +16,17 @@ function copyDir(src, dest) {
 }
 
 exports.default = async function afterPack(context) {
-  const { appOutDir } = context
+  const { appOutDir, packager, electronPlatformName } = context
   const src = path.join(__dirname, '..', '.next', 'standalone', 'node_modules')
-  const dest = path.join(appOutDir, 'resources', 'standalone', 'node_modules')
+
+  // The Resources folder lives at a different place per platform:
+  //   Windows/Linux: <appOutDir>/resources
+  //   macOS:         <appOutDir>/<ProductName>.app/Contents/Resources
+  const resourcesDir =
+    electronPlatformName === 'darwin'
+      ? path.join(appOutDir, `${packager.appInfo.productFilename}.app`, 'Contents', 'Resources')
+      : path.join(appOutDir, 'resources')
+  const dest = path.join(resourcesDir, 'standalone', 'node_modules')
 
   if (!fs.existsSync(src)) {
     console.warn('[afterPack] standalone/node_modules not found — skipping')
