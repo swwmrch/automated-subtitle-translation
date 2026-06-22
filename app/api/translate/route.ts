@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getIronSession } from "iron-session";
 import { cookies } from "next/headers";
 import { sessionOptions, type SessionData } from "@/lib/session";
-import { parseSrt, blocksToRawStrings, parseIdBlocks, stripTcPeriods, fixSrtNumbering, validateSrt, type SrtBlock } from "@/lib/srt";
+import { parseSrt, blocksToRawStrings, parseIdBlocks, stripTcPeriods, preserveCaptionBrackets, fixSrtNumbering, validateSrt, type SrtBlock } from "@/lib/srt";
 import OpenAI from "openai";
 
 export const maxDuration = 300;
@@ -179,8 +179,10 @@ function buildPrompt(
       `Translate the ${count} ID-tagged ${srcLabel} subtitle lines below into Traditional Chinese (台灣華語/繁體中文).\n\n` +
       `Guidelines:\n` +
       `- Simplified Chinese characters, Mainland Chinese expressions, and Mainland Chinese vocabulary are strictly forbidden, zero exceptions — use Taiwan Mandarin exclusively\n` +
-      `- Taiwan Mandarin vocabulary: 捷運 not 地鐵, 計程車 not 出租車, 機車 not 摩托車\n` +
+      `- Taiwan Mandarin vocabulary: 捷運 not 地鐵, 計程車 not 出租車, 機車 not 摩托車, 影片 not 視頻, 軟體 not 軟件\n` +
       `- Do NOT use the full stop 。 — omit sentence-ending periods (subtitle convention); keep other punctuation (，、？！…「」)\n` +
+      `- Match the register to the speaker and line type: spoken dialogue reads naturally and colloquially (口語化), on-screen captions/narration in their fitting style — never stiff or textbook-like\n` +
+      `- Localize idioms and slang — don't translate them word-for-word; use the natural Taiwanese expression that carries the same meaning and feeling\n` +
       koreanLines +
       `- Keep subtitles concise and screen-readable` +
       continuitySection +
@@ -388,7 +390,9 @@ export async function POST(request: NextRequest) {
           // TC subtitle convention: drop sentence-ending periods (safety net in
           // case the model ignores the prompt rule). Leave failed (source) text.
           const cleanTexts =
-            lang === "TC" && !failed ? texts.map(stripTcPeriods) : texts;
+            lang === "TC" && !failed
+              ? texts.map((t, j) => preserveCaptionBrackets(batchBlocks[j].text, stripTcPeriods(t)))
+              : texts;
 
           // Re-attach the ORIGINAL timestamps — never trust the model's timing.
           batchBlocks.forEach((orig, j) => {

@@ -111,6 +111,24 @@ export function stripTcPeriods(text: string): string {
     .join("\n");
 }
 
+// On-screen captions/narration are wrapped in ( ) in the source. The model
+// sometimes drops the brackets on the translation, blurring captions vs spoken
+// dialogue. When the source block is a fully-bracketed caption, re-wrap the
+// translated text in full-width （ ） — deterministic, like stripTcPeriods.
+export function preserveCaptionBrackets(srcText: string, tcText: string): string {
+  const src = srcText.trim();
+  if (!(src.startsWith("(") && src.endsWith(")"))) return tcText; // source isn't a caption
+  const tc = tcText.trim();
+  if (!tc) return tcText;
+  const hasOpen = tc.startsWith("（") || tc.startsWith("(");
+  const hasClose = tc.endsWith("）") || tc.endsWith(")");
+  if (hasOpen && hasClose) return tcText; // already wrapped — leave it
+  let inner = tc;
+  if (hasOpen) inner = inner.slice(1); // fix a stray one-sided bracket
+  if (hasClose) inner = inner.slice(0, -1);
+  return "（" + inner.trim() + "）";
+}
+
 export interface SrtWarning {
   type: string;
   message: string;
