@@ -7,7 +7,7 @@ import OpenAI from "openai";
 
 export const maxDuration = 300;
 
-const BATCH_SIZE = 10;
+const BATCH_SIZE = 25;
 const MAX_RETRIES = 3;
 const RETRY_SLEEP_MS = 5000;
 const BATCH_SLEEP_MS = 1500;
@@ -23,7 +23,10 @@ type InputLang = "KO" | "EN";
 
 const MAX_NOTES_LENGTH = 300;
 const MAX_GLOSSARY_LENGTH = 1000;
-const MAX_PREPASS_BLOCKS = 150;
+// Whole-episode proper-noun scan budget (text only). ~30k tokens on gpt-4o-mini
+// — a full episode's text is ~15k tokens, so most files are scanned in full;
+// only unusually large files get evenly sampled across the timeline.
+const MAX_PREPASS_CHARS = 120_000;
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -50,27 +53,60 @@ function buildSystemPrompt(outputLang: "EN" | "TC", inputLang: InputLang): strin
   return base;
 }
 
+// Build the proper-noun extraction sample from the WHOLE episode (text only —
+// indices/timestamps just waste budget). Characters get introduced throughout a
+// show, so scanning only the opening misses most names. Oversized files are
+// sampled evenly across the full timeline so late-introduced names are still seen.
+function buildPrepassSample(blocks: SrtBlock[]): string {
+  const all = blocks.map((b) => b.text).join("\n");
+  if (all.length <= MAX_PREPASS_CHARS) return all;
+  const step = Math.ceil(all.length / MAX_PREPASS_CHARS);
+  return blocks
+    .filter((_, i) => i % step === 0)
+    .map((b) => b.text)
+    .join("\n")
+    .slice(0, MAX_PREPASS_CHARS);
+}
+
 async function extractAutoGlossary(
   client: OpenAI,
-  rawBlocks: string[],
+  blocks: SrtBlock[],
   outputLang: "EN" | "TC",
   inputLang: InputLang
 ): Promise<string> {
-  const sample = rawBlocks.slice(0, MAX_PREPASS_BLOCKS).join("\n\n");
+  const sample = buildPrepassSample(blocks);
   const srcLabel = inputLang === "KO" ? "Korean" : "English";
   const targetLabel = outputLang === "TC" ? "Traditional Chinese (Taiwan Mandarin)" : "English";
+  // The extracted terms are injected into every batch as HIGHEST-PRIORITY glossary
+  // entries, so this pre-pass MUST honor the same Traditional-only rule as the main
+  // translator — otherwise Simplified renderings here override the main prompt and
+  // bleed into the final output for every occurrence of that name.
+  const tcRule =
+    outputLang === "TC"
+      ? " Translate into Traditional Chinese as used in Taiwan (台灣繁體中文/台灣華語); " +
+        "Simplified Chinese characters are strictly forbidden, zero exceptions."
+      : "";
   try {
     const res = await client.chat.completions.create({
       model: "gpt-4o-mini",
       messages: [
         {
           role: "system",
-          content: `You extract proper nouns from ${srcLabel} subtitle text and translate them. Output only a plain list, nothing else.`,
+          content:
+            `You extract proper nouns — specific named entities only — from ${srcLabel} subtitle text and translate them into ${targetLabel}.${tcRule} ` +
+            `You never include common words, generic nouns, verbs, or everyday phrases. Output only a plain list, nothing else.`,
         },
         {
           role: "user",
           content:
-            `From the ${srcLabel} subtitles below, identify all proper nouns — character names, place names, brand names, show-specific terms — and translate each into ${targetLabel}.\n\n` +
+            `From the ${srcLabel} subtitles below, extract ONLY proper nouns — specific named entities that actually appear in the text:\n` +
+            `- People's names (characters, real people)\n` +
+            `- Place names (cities, countries, mountains, landmarks)\n` +
+            `- Brand, group, and organization names\n` +
+            `- Titles of shows, songs, or films, and recurring segment names\n\n` +
+            `Do NOT include common words, generic nouns, verbs, adjectives, greetings, or everyday phrases ` +
+            `(e.g. "hello", "water", "love", "thank you", "let's go"). When in doubt, leave it out.\n\n` +
+            `List each unique term only once. Do not repeat entries. Output at most 40 lines. Translate each into ${targetLabel}.\n\n` +
             `Return ONLY a plain list, one per line, in this exact format:\n` +
             `source term → Translation\n\n` +
             `No headings, no explanations, nothing else.\n\n---\n\n${sample}`,
@@ -125,7 +161,7 @@ function formatGlossarySection(glossaryRaw: string, inputLang: InputLang): strin
   );
 }
 
-function outputRules(count: number, contextLine: string, body: string): string {
+function outputRules(count: number, contextLine: string): string {
   return (
     `\nOutput format:\n` +
     `- Tag every translation with its exact ID marker: \`<<id>> translated text\`\n` +
@@ -136,7 +172,7 @@ function outputRules(count: number, contextLine: string, body: string): string {
     `- Return ONLY the tagged entries — no commentary, no extra text\n` +
     `- Do NOT wrap output in markdown code blocks (no \`\`\` fences)\n` +
     `- Use straight apostrophes (') not curly/smart apostrophes (’)` +
-    `${contextLine}\n\n---\n\n${body}`
+    `${contextLine}`
   );
 }
 
@@ -175,6 +211,9 @@ function buildPrompt(
         ? `- Render Korean honorifics naturally: 언니→姊姊, 오빠→哥哥/歐巴, 선배→學長/學姐, 아저씨→大叔/叔叔\n` +
           `- Transliterate Korean names using Taiwan phonetic conventions, unless the glossary specifies a different rendering\n`
         : "";
+    // Static content (guidelines + glossary + output rules) is placed FIRST so it
+    // forms an identical prefix across every batch of a file — OpenAI caches it.
+    // The per-batch dynamic content (continuity + the lines) goes LAST.
     return (
       `Translate the ${count} ID-tagged ${srcLabel} subtitle lines below into Traditional Chinese (台灣華語/繁體中文).\n\n` +
       `Guidelines:\n` +
@@ -185,9 +224,10 @@ function buildPrompt(
       `- Localize idioms and slang — don't translate them word-for-word; use the natural Taiwanese expression that carries the same meaning and feeling\n` +
       koreanLines +
       `- Keep subtitles concise and screen-readable` +
-      continuitySection +
       glossarySection +
-      outputRules(count, contextLine, body)
+      outputRules(count, contextLine) +
+      continuitySection +
+      `\n\n---\n\n${body}`
     );
   }
 
@@ -198,9 +238,10 @@ function buildPrompt(
     `- Keep Korean names romanized (e.g. 민준→Min-jun, 지수→Ji-su), unless the glossary specifies a different spelling\n` +
     `- Convert Korean onomatopoeia to natural English equivalents (ㅋㅋ→laughter, ㅠㅠ→sadness)\n` +
     `- Keep subtitles concise and screen-readable` +
-    continuitySection +
     glossarySection +
-    outputRules(count, contextLine, body)
+    outputRules(count, contextLine) +
+    continuitySection +
+    `\n\n---\n\n${body}`
   );
 }
 
@@ -360,7 +401,7 @@ export async function POST(request: NextRequest) {
 
       try {
         send({ type: "prepass" });
-        const autoGlossary = await extractAutoGlossary(openaiClient, rawBlocks, lang as "EN" | "TC", inputLang);
+        const autoGlossary = await extractAutoGlossary(openaiClient, blocks, lang as "EN" | "TC", inputLang);
         const effectiveGlossary = mergeGlossaries(autoGlossary, glossary);
 
         const allTranslated: string[] = [];
@@ -415,7 +456,7 @@ export async function POST(request: NextRequest) {
 
         const fixed = fixSrtNumbering(allTranslated);
         const srtContent = fixed.join("\n\n") + "\n";
-        const validationWarnings = validateSrt(srtContent, blocks.length);
+        const validationWarnings = validateSrt(srtContent, blocks.length, blocks);
         const warnings = validationWarnings.map((w) => w.message);
         if (recoveredBatches.length) {
           warnings.unshift(

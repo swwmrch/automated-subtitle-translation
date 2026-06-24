@@ -116,7 +116,12 @@ export default function HomePage() {
     return /[가-힣]/.test(text) ? "KO" : "EN";
   }
 
-  async function handleFilesSelect(selected: File[]) {
+  async function handleFilesSelect(unsorted: File[]) {
+    // Queue in filename order (numeric-aware) so processing matches what the
+    // user sees — a multi-file OS drag delivers files in arbitrary order.
+    const selected = [...unsorted].sort((a, b) =>
+      a.name.localeCompare(b.name, undefined, { numeric: true })
+    );
     setFiles(selected);
     const detected = await Promise.all(
       selected.map(async (f) => detectInputLang(await f.text()))

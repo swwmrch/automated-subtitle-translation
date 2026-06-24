@@ -57,6 +57,16 @@ export function parseIdBlocks(raw: string): Map<number, string> {
   return map;
 }
 
+// Strip bare-integer lines that leak from LLM output (echoed index numbers),
+// but NEVER reduce a block to nothing — a cue whose real text IS a number
+// (a score, a count, an on-screen "105") must survive. Only drop bare-number
+// lines when other text remains; if every line is numeric, keep them as-is so
+// the cue is never silently dropped.
+function stripLeakedNumbers(textLines: string[]): string[] {
+  const kept = textLines.filter((ln) => !/^\d+$/.test(ln.trim()));
+  return kept.length ? kept : textLines;
+}
+
 // Re-number blocks and strip bare integer artifacts that leak from LLM output.
 export function fixSrtNumbering(blocks: string[]): string[] {
   const fixed: string[] = [];
@@ -71,13 +81,13 @@ export function fixSrtNumbering(blocks: string[]): string[] {
 
     if (lines.length >= 3 && lines[1].includes("-->")) {
       const ts = lines[1].trim();
-      const textLines = lines.slice(2).filter((ln) => !/^\d+$/.test(ln.trim()));
+      const textLines = stripLeakedNumbers(lines.slice(2));
       if (textLines.length) fixed.push(`${num}\n${ts}\n${textLines.join("\n")}`);
     } else if (lines.length >= 2 && lines.some((ln) => ln.includes("-->"))) {
       const ts = lines.find((ln) => ln.includes("-->"))?.trim() ?? "";
-      const textLines = lines.filter(
-        (ln) => !ln.includes("-->") && !/^\d+$/.test(ln.trim())
-      );
+      // Drop the leading index line, then keep the rest (numeric content survives).
+      const body = lines.filter((ln) => !ln.includes("-->")).slice(1);
+      const textLines = stripLeakedNumbers(body);
       if (ts && textLines.length) fixed.push(`${num}\n${ts}\n${textLines.join("\n")}`);
     }
   }
@@ -135,7 +145,12 @@ export interface SrtWarning {
 }
 
 // Post-translation validation — returns warnings for known LLM output errors.
-export function validateSrt(content: string, expectedBlocks: number): SrtWarning[] {
+// Pass sourceBlocks to pinpoint which cue went missing on a count mismatch.
+export function validateSrt(
+  content: string,
+  expectedBlocks: number,
+  sourceBlocks?: SrtBlock[]
+): SrtWarning[] {
   const warnings: SrtWarning[] = [];
   const tsRe = /^\d{2}:\d{2}:\d{2},\d{3} --> \d{2}:\d{2}:\d{2},\d{3}$/;
   const smartQuoteRe = /[‘’“”]/u;
@@ -147,9 +162,36 @@ export function validateSrt(content: string, expectedBlocks: number): SrtWarning
     .filter((b) => b.trim());
 
   if (blocks.length !== expectedBlocks) {
+    let detail = "";
+    // Output cues carry the ORIGINAL timestamps (re-attached in code), so a
+    // timestamp diff against the source names exactly which cue(s) dropped.
+    if (sourceBlocks && blocks.length < expectedBlocks) {
+      const outCounts = new Map<string, number>();
+      for (const b of blocks) {
+        const ts = b.split("\n")[1]?.trim();
+        if (ts) outCounts.set(ts, (outCounts.get(ts) ?? 0) + 1);
+      }
+      const missing: SrtBlock[] = [];
+      for (const sb of sourceBlocks) {
+        const c = outCounts.get(sb.timestamp) ?? 0;
+        if (c > 0) outCounts.set(sb.timestamp, c - 1);
+        else missing.push(sb);
+      }
+      if (missing.length) {
+        const where = missing
+          .slice(0, 5)
+          .map((m) => {
+            const txt = m.text.replace(/\n/g, " ").slice(0, 30);
+            const start = m.timestamp.split(" ")[0];
+            return `source #${m.index} (${start} "${txt}")`;
+          })
+          .join(", ");
+        detail = ` — missing ${missing.length} cue(s): ${where}${missing.length > 5 ? "…" : ""}`;
+      }
+    }
     warnings.push({
       type: "block_count",
-      message: `block count mismatch: expected ${expectedBlocks}, got ${blocks.length}`,
+      message: `block count mismatch: expected ${expectedBlocks}, got ${blocks.length}${detail}`,
     });
   }
 
